@@ -1,7 +1,11 @@
 use crate::elf_header::*;
 use crate::error::{Error, Res};
-use crate::parse::{ByteStream, Parser, Table};
+use crate::parse::{ByteStream, Magic, Table};
 use crate::unknown;
+
+pub fn is_magic(magic: Magic) -> bool {
+    magic.starts_with(&[ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3])
+}
 
 #[derive(Copy, Clone)]
 enum WordSize {
@@ -10,19 +14,11 @@ enum WordSize {
 }
 
 #[derive(Default)]
-pub struct ElfParser {
+pub struct Parser {
     word_size: Option<WordSize>,
 }
 
-impl<B: ByteStream> Parser<B> for ElfParser {
-    fn parse(&mut self, mut bytes: B) -> Res<Table> {
-        let mut table = Default::default();
-        self.header(&mut bytes, &mut table)?;
-        Ok(table)
-    }
-}
-
-impl ElfParser {
+impl Parser {
     fn add_word_entry<
         V32: Into<std::borrow::Cow<'static, str>>,
         V64: Into<std::borrow::Cow<'static, str>>,
@@ -41,10 +37,14 @@ impl ElfParser {
         Ok(())
     }
 
+    pub fn parse(&mut self, mut bytes: impl ByteStream) -> Res<Table> {
+        let mut table = Default::default();
+        self.header(&mut bytes, &mut table)?;
+        Ok(table)
+    }
+
     fn header(&mut self, bytes: &mut impl ByteStream, table: &mut Table) -> Res<()> {
-        if bytes.pull::<[_; _]>()? != [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3] {
-            unknown!();
-        }
+        bytes.pull::<[_; 4]>()?;
         let (word_size, entry_value) = match bytes.pull()? {
             ELFCLASS32 => (WordSize::Four, "32 bit"),
             ELFCLASS64 => (WordSize::Eight, "64 bit"),

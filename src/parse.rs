@@ -2,6 +2,8 @@ mod elf;
 
 use crate::error::{Error, Res};
 
+pub type Magic = [u8; 8];
+
 pub trait ByteStream {
     fn next_byte(&mut self) -> Res<u8>;
 
@@ -85,14 +87,14 @@ impl Table {
     }
 }
 
-pub trait Parser<B: ByteStream> {
-    fn parse(&mut self, bytes: B) -> Res<Table>;
-}
-
-pub fn start<B: ByteStream>(bytes: B, magic: [u8; 8]) -> Res<Table> {
-    Ok((&mut match magic {
-        [0x7F, b'E', b'L', b'F', ..] => elf::ElfParser::default(),
-        _ => unknown!(),
-    } as &mut dyn Parser<B>)
-        .parse(bytes)?)
+pub fn start<B: ByteStream>(bytes: B, magic: Magic) -> Res<Table> {
+    macro_rules! try_parse {
+        ($mod:tt) => {
+            if $mod::is_magic(magic) {
+                return $mod::Parser::default().parse(bytes);
+            }
+        };
+    }
+    try_parse!(elf);
+    unknown!();
 }
