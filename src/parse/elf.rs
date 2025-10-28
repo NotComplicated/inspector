@@ -1,6 +1,6 @@
 use crate::elf_header::*;
 use crate::error::{Error, Res};
-use crate::parse::{Bytes, Table};
+use crate::parse::{Bytes, Pull, Table};
 use crate::unknown;
 
 const MAGIC: [u8; 4] = [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3];
@@ -9,15 +9,94 @@ pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
     Ok(bytes.pull_arr()? == MAGIC)
 }
 
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Debug)]
+struct ProgramHeader32 {
+    r#type: u32,
+    offset: u32,
+    vaddr: u32,
+    paddr: u32,
+    filesz: u32,
+    memsz: u32,
+    flags: u32,
+    align: u32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct ProgramHeader64 {
+    r#type: u32,
+    flags: u32,
+    offset: u64,
+    vaddr: u64,
+    paddr: u64,
+    filesz: u64,
+    memsz: u64,
+    align: u64,
+}
+
+impl Pull for ProgramHeader32 {
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+        let r#type = bytes.pull()?;
+        let offset = bytes.pull()?;
+        let vaddr = bytes.pull()?;
+        let paddr = bytes.pull()?;
+        let filesz = bytes.pull()?;
+        let memsz = bytes.pull()?;
+        let flags = bytes.pull()?;
+        let align = bytes.pull()?;
+        Ok(Self {
+            r#type,
+            offset,
+            vaddr,
+            paddr,
+            filesz,
+            memsz,
+            flags,
+            align,
+        })
+    }
+}
+
+impl Pull for ProgramHeader64 {
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+        let r#type = bytes.pull()?;
+        let flags = bytes.pull()?;
+        let offset = bytes.pull()?;
+        let vaddr = bytes.pull()?;
+        let paddr = bytes.pull()?;
+        let filesz = bytes.pull()?;
+        let memsz = bytes.pull()?;
+        let align = bytes.pull()?;
+        Ok(Self {
+            r#type,
+            flags,
+            offset,
+            vaddr,
+            paddr,
+            filesz,
+            memsz,
+            align,
+        })
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 enum WordSize {
     Four,
     Eight,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Parser {
     word_size: Option<WordSize>,
+    ph_offset: u64,
+    ph_size: u16,
+    ph_count: u16,
+    sh_offset: u64,
+    sh_size: u16,
+    sh_count: u16,
+    sh_idx_str_table: u16,
 }
 
 impl Parser {
@@ -29,12 +108,12 @@ impl Parser {
         table: &mut Table,
         key: &'static str,
         bytes: &mut impl Bytes,
-        get_value_32: impl FnOnce(u32) -> Res<V32>,
-        get_value_64: impl FnOnce(u64) -> Res<V64>,
+        get_value_32: impl FnOnce(&mut Self, u32) -> Res<V32>,
+        get_value_64: impl FnOnce(&mut Self, u64) -> Res<V64>,
     ) -> Res<()> {
         match self.word_size.expect("word size must be set") {
-            WordSize::Four => table.add_entry(key, get_value_32(bytes.pull()?)?),
-            WordSize::Eight => table.add_entry(key, get_value_64(bytes.pull()?)?),
+            WordSize::Four => table.add_entry(key, get_value_32(self, bytes.pull()?)?),
+            WordSize::Eight => table.add_entry(key, get_value_64(self, bytes.pull()?)?),
         }
         Ok(())
     }
@@ -42,6 +121,7 @@ impl Parser {
     pub fn parse(&mut self, mut bytes: impl Bytes) -> Res<Table> {
         let mut table = Default::default();
         self.header(&mut bytes, &mut table)?;
+        self.pheaders(&mut bytes, &mut table)?;
         Ok(table)
     }
 
@@ -180,8 +260,8 @@ impl Parser {
             table,
             "Entry Address",
             bytes,
-            |addr| Ok(format!("0x{addr:08X}")),
-            |addr| Ok(format!("0x{addr:016X}")),
+            |_, addr| Ok(format!("0x{addr:08X}")),
+            |_, addr| Ok(format!("0x{addr:016X}")),
         )?;
         fn fmt_byte_count<B: std::fmt::Display>(byte_count: B) -> Res<String> {
             Ok(format!("{byte_count} bytes"))
@@ -190,23 +270,44 @@ impl Parser {
             table,
             "Start of Program Headers",
             bytes,
-            fmt_byte_count,
-            fmt_byte_count,
+            |this, ph_offset| {
+                this.ph_offset = ph_offset.into();
+                fmt_byte_count(ph_offset)
+            },
+            |this, ph_offset| {
+                this.ph_offset = ph_offset;
+                fmt_byte_count(ph_offset)
+            },
         )?;
         self.add_word_entry(
             table,
             "Start of Section Headers",
             bytes,
-            fmt_byte_count,
-            fmt_byte_count,
+            |this, sh_offset| {
+                this.sh_offset = sh_offset.into();
+                fmt_byte_count(sh_offset)
+            },
+            |this, sh_offset| {
+                this.sh_offset = sh_offset;
+                fmt_byte_count(sh_offset)
+            },
         )?;
         bytes.forward_sizeof::<u32>()?; // flags, unimplemented
         bytes.forward_sizeof::<u16>()?; // header size
-        let ph_size: u16 = bytes.pull()?;
-        let ph_count: u16 = bytes.pull()?;
-        let sh_size: u16 = bytes.pull()?;
-        let sh_count: u16 = bytes.pull()?;
-        let sh_idx_str_table: u16 = bytes.pull()?;
+        self.ph_size = bytes.pull()?;
+        self.ph_count = bytes.pull()?;
+        self.sh_size = bytes.pull()?;
+        self.sh_count = bytes.pull()?;
+        self.sh_idx_str_table = bytes.pull()?;
+
+        Ok(())
+    }
+
+    fn pheaders(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
+        bytes.seek(std::io::SeekFrom::Start(self.ph_offset))?;
+        let pheader: ProgramHeader64 = bytes.pull()?;
+        dbg!(pheader);
+        dbg!(self);
 
         Ok(())
     }
