@@ -1,14 +1,14 @@
 pub enum Error {
     Cli(String),
-    Io(std::path::PathBuf, std::io::Error),
+    Io(std::io::Error),
     Eof(std::backtrace::Backtrace),
     UnknownFormat(std::backtrace::Backtrace, u32),
-    Other(Box<dyn std::error::Error>),
+    RunCtx(std::path::PathBuf, Box<Error>),
 }
 
-impl<E: std::error::Error + 'static> From<E> for Error {
-    fn from(err: E) -> Self {
-        Error::Other(Box::new(err))
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
     }
 }
 
@@ -21,13 +21,13 @@ impl std::fmt::Display for Error {
             Ok(())
         };
         match self {
-            Error::Cli(msg) => write!(f, "CLI error: {msg}"),
-            Error::Io(path, err) => write!(f, "IO error while reading {}: {err}", path.display()),
-            Error::Eof(bt) => {
+            Self::Cli(msg) => write!(f, "CLI error: {msg}"),
+            Self::Io(err) => write!(f, "IO error: {err}"),
+            Self::Eof(bt) => {
                 write!(f, "Encountered EOF prematurely")?;
                 print_bt(f, bt)
             }
-            Error::UnknownFormat(bt, line) => {
+            Self::UnknownFormat(bt, line) => {
                 write!(f, "Unknown format")?;
                 #[cfg(debug_assertions)]
                 {
@@ -35,7 +35,7 @@ impl std::fmt::Display for Error {
                 }
                 print_bt(f, bt)
             }
-            Error::Other(err) => write!(f, "Error: {err}"),
+            Self::RunCtx(path, err) => write!(f, "{err}\n(while parsing {})", path.display()),
         }
     }
 }

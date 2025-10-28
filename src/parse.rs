@@ -2,52 +2,51 @@ mod elf;
 
 use crate::error::{Error, Res};
 
-pub type Magic = [u8; 8];
-
-pub trait ByteStream {
-    fn next_byte(&mut self) -> Res<u8>;
-
+pub trait Bytes: std::io::BufRead + std::io::Seek {
     fn pull<P: Pull>(&mut self) -> Res<P> {
         P::pull(self)
     }
-}
 
-impl<T: Iterator<Item = Res<u8>>> ByteStream for T {
-    fn next_byte(&mut self) -> Res<u8> {
-        self.next()
-            .ok_or_else(|| Error::Eof(std::backtrace::Backtrace::capture()))
-            .flatten()
+    fn pull_arr<T, const N: usize>(&mut self) -> Res<[T; N]>
+    where
+        [T; N]: Pull,
+    {
+        self.pull()
+    }
+
+    fn skip(&mut self, count: impl Into<i64>) -> Res<()> {
+        self.seek_relative(count.into()).map_err(Into::into)
     }
 }
 
+impl<T: std::io::BufRead + std::io::Seek> Bytes for T {}
+
 pub trait Pull: Sized {
-    fn pull<B: ByteStream + ?Sized>(bytes: &mut B) -> Res<Self>;
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self>;
 }
 
 impl<const N: usize> Pull for [u8; N] {
-    fn pull<B: ByteStream + ?Sized>(bytes: &mut B) -> Res<Self> {
-        let mut pulled_bytes = [0; _];
-        for i in 0..N {
-            pulled_bytes[i] = bytes.next_byte()?;
-        }
-        Ok(pulled_bytes)
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+        let mut pulled = [0; _];
+        bytes.read_exact(&mut pulled)?;
+        Ok(pulled)
     }
 }
 
-macro_rules! impl_fromstream {
+macro_rules! impl_pull {
     ($int:ty) => {
         impl Pull for $int {
-            fn pull<B: ByteStream + ?Sized>(bytes: &mut B) -> Res<Self> {
+            fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
                 Pull::pull(bytes).map(<$int>::from_le_bytes)
             }
         }
     };
 }
 
-impl_fromstream!(u8);
-impl_fromstream!(u16);
-impl_fromstream!(u32);
-impl_fromstream!(u64);
+impl_pull!(u8);
+impl_pull!(u16);
+impl_pull!(u32);
+impl_pull!(u64);
 
 #[macro_export]
 macro_rules! unknown {
@@ -87,12 +86,14 @@ impl Table {
     }
 }
 
-pub fn start<B: ByteStream>(bytes: B, magic: Magic) -> Res<Table> {
+pub fn start<B: Bytes>(mut bytes: B) -> Res<Table> {
     macro_rules! try_parse {
         ($mod:tt) => {
-            if $mod::is_magic(magic) {
+            if $mod::matching_magic(&mut bytes)? {
+                bytes.rewind()?;
                 return $mod::Parser::default().parse(bytes);
             }
+            bytes.rewind()?;
         };
     }
     try_parse!(elf);

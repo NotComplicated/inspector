@@ -1,10 +1,10 @@
 use crate::elf_header::*;
 use crate::error::{Error, Res};
-use crate::parse::{ByteStream, Magic, Table};
+use crate::parse::{Bytes, Table};
 use crate::unknown;
 
-pub fn is_magic(magic: Magic) -> bool {
-    magic.starts_with(&[ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3])
+pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
+    Ok(bytes.pull_arr()? == [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3])
 }
 
 #[derive(Copy, Clone)]
@@ -26,7 +26,7 @@ impl Parser {
         &mut self,
         table: &mut Table,
         key: &'static str,
-        bytes: &mut impl ByteStream,
+        bytes: &mut impl Bytes,
         get_value_32: impl FnOnce(u32) -> Res<V32>,
         get_value_64: impl FnOnce(u64) -> Res<V64>,
     ) -> Res<()> {
@@ -37,14 +37,14 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parse(&mut self, mut bytes: impl ByteStream) -> Res<Table> {
+    pub fn parse(&mut self, mut bytes: impl Bytes) -> Res<Table> {
         let mut table = Default::default();
         self.header(&mut bytes, &mut table)?;
         Ok(table)
     }
 
-    fn header(&mut self, bytes: &mut impl ByteStream, table: &mut Table) -> Res<()> {
-        bytes.pull::<[_; 4]>()?;
+    fn header(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
+        bytes.pull_arr::<_, 4>()?; // ignore magic
         let (word_size, entry_value) = match bytes.pull()? {
             ELFCLASS32 => (WordSize::Four, "32 bit"),
             ELFCLASS64 => (WordSize::Eight, "64 bit"),
@@ -82,7 +82,7 @@ impl Parser {
                 _ => unknown!(),
             },
         );
-        bytes.pull::<[_; 8]>()?;
+        bytes.pull::<[_; 8]>()?; // padding
         table.add_entry(
             "File Type",
             match bytes.pull()? {
@@ -198,6 +198,12 @@ impl Parser {
             fmt_bytes,
             fmt_bytes,
         )?;
+        bytes.pull::<u32>()?; // flags, unimplemented
+        bytes.pull::<u16>()?; // header size
+        let ph_size: u16 = bytes.pull()?;
+        let ph_count: u16 = bytes.pull()?;
+        let sh_size: u16 = bytes.pull()?;
+        let sh_count: u16 = bytes.pull()?;
 
         Ok(())
     }
