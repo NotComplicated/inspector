@@ -3,7 +3,6 @@ pub mod error;
 pub mod parse;
 
 use error::{Error, Res};
-use parse::GenericParser;
 use std::io::{Read, Seek, Write};
 
 fn run() -> Res<()> {
@@ -32,9 +31,8 @@ fn run() -> Res<()> {
             maybe_path.as_ref()?;
             Some(res.map_err(|e| Error::Io(maybe_path.take().unwrap(), e)))
         });
-        let mut parser = GenericParser::new(data_stream);
-        parser.start(magic)?;
-        parser.display(&mut stdout)?;
+        let table = parse::start(data_stream, magic)?;
+        table.display(&mut stdout)?;
     }
     Ok(())
 }
