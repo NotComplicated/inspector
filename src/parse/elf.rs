@@ -3,8 +3,10 @@ use crate::error::{Error, Res};
 use crate::parse::{Bytes, Table};
 use crate::unknown;
 
+const MAGIC: [u8; 4] = [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3];
+
 pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
-    Ok(bytes.pull_arr()? == [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3])
+    Ok(bytes.pull_arr()? == MAGIC)
 }
 
 #[derive(Copy, Clone)]
@@ -44,7 +46,7 @@ impl Parser {
     }
 
     fn header(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
-        bytes.pull_arr::<_, 4>()?; // ignore magic
+        bytes.forward(MAGIC.len())?; // ignore magic
         let (word_size, entry_value) = match bytes.pull()? {
             ELFCLASS32 => (WordSize::Four, "32 bit"),
             ELFCLASS64 => (WordSize::Eight, "64 bit"),
@@ -82,7 +84,7 @@ impl Parser {
                 _ => unknown!(),
             },
         );
-        bytes.pull::<[_; 8]>()?; // padding
+        bytes.forward(8)?; // padding
         table.add_entry(
             "File Type",
             match bytes.pull()? {
@@ -181,29 +183,30 @@ impl Parser {
             |addr| Ok(format!("0x{addr:08X}")),
             |addr| Ok(format!("0x{addr:016X}")),
         )?;
-        fn fmt_bytes<B: std::fmt::Display>(bytes: B) -> Res<String> {
-            Ok(format!("{bytes} bytes"))
+        fn fmt_byte_count<B: std::fmt::Display>(byte_count: B) -> Res<String> {
+            Ok(format!("{byte_count} bytes"))
         }
         self.add_word_entry(
             table,
             "Start of Program Headers",
             bytes,
-            fmt_bytes,
-            fmt_bytes,
+            fmt_byte_count,
+            fmt_byte_count,
         )?;
         self.add_word_entry(
             table,
             "Start of Section Headers",
             bytes,
-            fmt_bytes,
-            fmt_bytes,
+            fmt_byte_count,
+            fmt_byte_count,
         )?;
-        bytes.pull::<u32>()?; // flags, unimplemented
-        bytes.pull::<u16>()?; // header size
+        bytes.forward_sizeof::<u32>()?; // flags, unimplemented
+        bytes.forward_sizeof::<u16>()?; // header size
         let ph_size: u16 = bytes.pull()?;
         let ph_count: u16 = bytes.pull()?;
         let sh_size: u16 = bytes.pull()?;
         let sh_count: u16 = bytes.pull()?;
+        let sh_idx_str_table: u16 = bytes.pull()?;
 
         Ok(())
     }

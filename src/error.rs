@@ -1,14 +1,14 @@
 pub enum Error {
     Cli(String),
-    Io(std::io::Error),
-    Eof(std::backtrace::Backtrace),
+    Io(std::io::Error, std::backtrace::Backtrace),
+    Seek(usize),
     UnknownFormat(std::backtrace::Backtrace, u32),
     RunCtx(std::path::PathBuf, Box<Error>),
 }
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
+        Self::Io(err, std::backtrace::Backtrace::capture())
     }
 }
 
@@ -22,11 +22,11 @@ impl std::fmt::Display for Error {
         };
         match self {
             Self::Cli(msg) => write!(f, "CLI error: {msg}"),
-            Self::Io(err) => write!(f, "IO error: {err}"),
-            Self::Eof(bt) => {
-                write!(f, "Encountered EOF prematurely")?;
+            Self::Io(err, bt) => {
+                write!(f, "IO error: {err}")?;
                 print_bt(f, bt)
             }
+            Self::Seek(count) => write!(f, "Seeked too many bytes ({count})"),
             Self::UnknownFormat(bt, line) => {
                 write!(f, "Unknown format")?;
                 #[cfg(debug_assertions)]

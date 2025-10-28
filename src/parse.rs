@@ -14,8 +14,20 @@ pub trait Bytes: std::io::BufRead + std::io::Seek {
         self.pull()
     }
 
-    fn skip(&mut self, count: impl Into<i64>) -> Res<()> {
-        self.seek_relative(count.into()).map_err(Into::into)
+    fn forward(&mut self, count: usize) -> Res<()> {
+        Ok(self.seek_relative(count.try_into().map_err(|_| Error::Seek(count))?)?)
+    }
+
+    fn backward(&mut self, count: usize) -> Res<()> {
+        Ok(self.seek_relative(-count.try_into().map_err(|_| Error::Seek(count))?)?)
+    }
+
+    fn forward_sizeof<T>(&mut self) -> Res<()> {
+        self.forward(std::mem::size_of::<T>())
+    }
+
+    fn backward_sizeof<T>(&mut self) -> Res<()> {
+        self.backward(std::mem::size_of::<T>())
     }
 }
 
@@ -88,7 +100,7 @@ impl Table {
 
 pub fn start<B: Bytes>(mut bytes: B) -> Res<Table> {
     macro_rules! try_parse {
-        ($mod:tt) => {
+        ($mod:ident) => {
             if $mod::matching_magic(&mut bytes)? {
                 bytes.rewind()?;
                 return $mod::Parser::default().parse(bytes);
@@ -97,5 +109,6 @@ pub fn start<B: Bytes>(mut bytes: B) -> Res<Table> {
         };
     }
     try_parse!(elf);
+    // add parse modules here
     unknown!();
 }
