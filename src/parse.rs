@@ -29,6 +29,11 @@ pub trait Bytes: std::io::BufRead + std::io::Seek {
     fn backward_sizeof<T>(&mut self) -> Res<()> {
         self.backward(std::mem::size_of::<T>())
     }
+
+    fn jump(&mut self, pos: u64) -> Res<()> {
+        self.seek(std::io::SeekFrom::Start(pos))?;
+        Ok(())
+    }
 }
 
 impl<T: std::io::BufRead + std::io::Seek> Bytes for T {}
@@ -60,6 +65,18 @@ impl_pull!(u16);
 impl_pull!(u32);
 impl_pull!(u64);
 
+impl Pull for std::ffi::CString {
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+        let mut contents = vec![];
+        while let byte = bytes.pull::<u8>()?
+            && byte != 0
+        {
+            contents.push(byte);
+        }
+        Ok(Self::new(contents).expect("already checked bytes are not null"))
+    }
+}
+
 #[macro_export]
 macro_rules! unknown {
     () => {
@@ -70,31 +87,65 @@ macro_rules! unknown {
     };
 }
 
-#[derive(Default)]
+pub type Str = std::borrow::Cow<'static, str>;
+
 pub struct Table {
-    keys: Vec<&'static str>,
-    values: Vec<std::borrow::Cow<'static, str>>,
-    width: usize,
+    entries: Vec<(Str, Str)>,
+    sections: Vec<Section>,
+}
+
+#[derive(Default)]
+struct Section {
+    name: Option<Str>,
+    len: u16,
+    width: u16,
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self {
+            sections: vec![Default::default()],
+            entries: vec![],
+        }
+    }
 }
 
 impl Table {
     pub fn display(&self, target: &mut impl std::io::Write) -> Res<()> {
-        for (key, value) in self.keys.iter().zip(&self.values) {
-            write!(target, "{key}:")?;
-            target.write_all(&[b' '; 100][..self.width - key.len() + 1])?;
-            writeln!(target, "{value}")?;
+        let mut entries_iter = self.entries.iter();
+        let mut first_iter = true;
+        for section in &self.sections {
+            if first_iter {
+                first_iter = false;
+            } else if let Some(name) = &section.name {
+                writeln!(target, "\n* {name} *")?;
+            } else {
+                writeln!(target)?;
+            }
+            for (key, value) in entries_iter.by_ref().take(section.len.into()) {
+                write!(target, "{key}:")?;
+                target.write_all(&[b' '; 100][..section.width as usize - key.len() + 1])?;
+                writeln!(target, "{value}")?;
+            }
         }
         Ok(())
     }
 
-    pub fn add_entry(
-        &mut self,
-        key: &'static str,
-        value: impl Into<std::borrow::Cow<'static, str>>,
-    ) {
-        self.keys.push(key);
-        self.values.push(value.into());
-        self.width = self.width.max(key.len());
+    pub fn add_entry(&mut self, key: impl Into<Str>, value: impl Into<Str>) {
+        let key = key.into();
+        let curr_section = self.sections.last_mut().expect("at least one section");
+        curr_section.width = curr_section
+            .width
+            .max(key.len().try_into().expect("key is <= u16::MAX"));
+        curr_section.len += 1;
+        self.entries.push((key, value.into()));
+    }
+
+    pub fn new_section(&mut self, name: Option<impl Into<Str>>) {
+        self.sections.push(Section {
+            name: name.map(Into::into),
+            ..Default::default()
+        });
     }
 }
 
@@ -108,7 +159,9 @@ pub fn start<B: Bytes>(mut bytes: B) -> Res<Table> {
             bytes.rewind()?;
         };
     }
+
     try_parse!(elf);
     // add parse modules here
+
     unknown!();
 }

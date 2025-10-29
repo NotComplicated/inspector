@@ -1,6 +1,6 @@
 use crate::elf_header::*;
 use crate::error::{Error, Res};
-use crate::parse::{Bytes, Pull, Table};
+use crate::parse::{Bytes, Pull, Str, Table};
 use crate::unknown;
 
 const MAGIC: [u8; 4] = [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3];
@@ -9,10 +9,47 @@ pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
     Ok(bytes.pull_arr()? == MAGIC)
 }
 
+#[repr(u32)]
+#[derive(Debug)]
+enum SegmentType {
+    Null = PT_NULL,
+    Load = PT_LOAD,
+    Dynamic = PT_DYNAMIC,
+    Interp = PT_INTERP,
+    Note = PT_NOTE,
+    ShLib = PT_SHLIB,
+    PHdr = PT_PHDR,
+    Tls = PT_TLS,
+    GnuEhFrame = PT_GNU_EH_FRAME,
+    GnuStack = PT_GNU_STACK,
+    GnuRelRo = PT_GNU_RELRO,
+}
+
+impl TryFrom<u32> for SegmentType {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PT_NULL => Self::Null,
+            PT_LOAD => Self::Load,
+            PT_DYNAMIC => Self::Dynamic,
+            PT_INTERP => Self::Interp,
+            PT_NOTE => Self::Note,
+            PT_SHLIB => Self::ShLib,
+            PT_PHDR => Self::PHdr,
+            PT_TLS => Self::Tls,
+            PT_GNU_EH_FRAME => Self::GnuEhFrame,
+            PT_GNU_STACK => Self::GnuStack,
+            PT_GNU_RELRO => Self::GnuRelRo,
+            _ => unknown!(),
+        })
+    }
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct ProgramHeader32 {
-    r#type: u32,
+    r#type: SegmentType,
     offset: u32,
     vaddr: u32,
     paddr: u32,
@@ -25,7 +62,7 @@ struct ProgramHeader32 {
 #[repr(C)]
 #[derive(Debug)]
 struct ProgramHeader64 {
-    r#type: u32,
+    r#type: SegmentType,
     flags: u32,
     offset: u64,
     vaddr: u64,
@@ -37,7 +74,7 @@ struct ProgramHeader64 {
 
 impl Pull for ProgramHeader32 {
     fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-        let r#type = bytes.pull()?;
+        let r#type = bytes.pull::<u32>()?.try_into()?;
         let offset = bytes.pull()?;
         let vaddr = bytes.pull()?;
         let paddr = bytes.pull()?;
@@ -60,7 +97,7 @@ impl Pull for ProgramHeader32 {
 
 impl Pull for ProgramHeader64 {
     fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-        let r#type = bytes.pull()?;
+        let r#type = bytes.pull::<u32>()?.try_into()?;
         let flags = bytes.pull()?;
         let offset = bytes.pull()?;
         let vaddr = bytes.pull()?;
@@ -78,6 +115,33 @@ impl Pull for ProgramHeader64 {
             memsz,
             align,
         })
+    }
+}
+
+#[derive(Debug)]
+struct ProgramHeader {
+    r#type: SegmentType,
+    flags: u32,
+    offset: u64,
+}
+
+impl From<ProgramHeader64> for ProgramHeader {
+    fn from(value: ProgramHeader64) -> Self {
+        Self {
+            r#type: value.r#type,
+            flags: value.flags,
+            offset: value.offset,
+        }
+    }
+}
+
+impl From<ProgramHeader32> for ProgramHeader {
+    fn from(value: ProgramHeader32) -> Self {
+        Self {
+            r#type: value.r#type,
+            flags: value.flags,
+            offset: value.offset.into(),
+        }
     }
 }
 
@@ -100,13 +164,10 @@ pub struct Parser {
 }
 
 impl Parser {
-    fn add_word_entry<
-        V32: Into<std::borrow::Cow<'static, str>>,
-        V64: Into<std::borrow::Cow<'static, str>>,
-    >(
+    fn add_word_entry<V32: Into<Str>, V64: Into<Str>>(
         &mut self,
         table: &mut Table,
-        key: &'static str,
+        key: impl Into<Str>,
         bytes: &mut impl Bytes,
         get_value_32: impl FnOnce(&mut Self, u32) -> Res<V32>,
         get_value_64: impl FnOnce(&mut Self, u64) -> Res<V64>,
@@ -304,10 +365,53 @@ impl Parser {
     }
 
     fn pheaders(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
-        bytes.seek(std::io::SeekFrom::Start(self.ph_offset))?;
-        let pheader: ProgramHeader64 = bytes.pull()?;
-        dbg!(pheader);
-        dbg!(self);
+        bytes.jump(self.ph_offset)?;
+        for i in 0..self.ph_count {
+            table.new_section(Some(format!("Program Segment {}/{}", i + 1, self.ph_count)));
+            let pheader: ProgramHeader = match self.word_size.expect("word size was asssigned") {
+                WordSize::Four => bytes.pull::<ProgramHeader32>()?.into(),
+                WordSize::Eight => bytes.pull::<ProgramHeader64>()?.into(),
+            };
+            table.add_entry(
+                "Segment Type",
+                match pheader.r#type {
+                    SegmentType::Null => "NULL",
+                    SegmentType::Load => "LOAD",
+                    SegmentType::Dynamic => "DYNAMIC",
+                    SegmentType::Interp => "INTERP",
+                    SegmentType::Note => "NOTE",
+                    SegmentType::ShLib => "SHLIB",
+                    SegmentType::PHdr => "PHDR",
+                    SegmentType::Tls => "TLS",
+                    SegmentType::GnuEhFrame => "GNU_EH_FRAME",
+                    SegmentType::GnuStack => "GNU_STACK",
+                    SegmentType::GnuRelRo => "GNU_RELRO",
+                },
+            );
+            let read = (pheader.flags & PF_R > 0, "Read");
+            let write = (pheader.flags & PF_W > 0, "Write");
+            let exec = (pheader.flags & PF_X > 0, "Execute");
+            let flags: String = [read, write, exec]
+                .iter()
+                .filter_map(|&(enabled, flag)| enabled.then_some(flag))
+                .enumerate()
+                .flat_map(|(i, flag)| [if i == 0 { "" } else { ", " }, flag])
+                .collect();
+            table.add_entry("Flags", flags);
+            match pheader.r#type {
+                SegmentType::Interp => {
+                    let curr_pos = bytes.stream_position()?;
+                    bytes.jump(pheader.offset)?;
+                    let interpreter = match bytes.pull::<std::ffi::CString>()?.into_string() {
+                        Ok(string) => string,
+                        Err(err) => err.into_cstring().to_string_lossy().into_owned(),
+                    };
+                    table.add_entry("Interpreter", interpreter);
+                    bytes.jump(curr_pos)?;
+                }
+                _ => {}
+            }
+        }
 
         Ok(())
     }

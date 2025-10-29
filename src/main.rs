@@ -8,9 +8,7 @@ use std::io::Write;
 const CURSOR_SIZE_LIMIT: u64 = 32 * 1024 * 1024;
 
 fn run() -> Res<()> {
-    let file_paths = std::env::args_os()
-        .skip(1)
-        .map(Into::<std::path::PathBuf>::into);
+    let file_paths = std::env::args_os().skip(1).map(std::path::PathBuf::from);
     let file_paths_len = file_paths.len();
     if file_paths_len == 0 {
         return Err(Error::Cli("No file paths provided".into()));
@@ -40,7 +38,6 @@ fn run() -> Res<()> {
             write_path(&mut stdout, &file_path)?;
             parse::start(file)
         } else {
-            println!("bar");
             let contents = std::io::Cursor::new(std::fs::read(&file_path)?);
             write_path(&mut stdout, &file_path)?;
             parse::start(contents)
