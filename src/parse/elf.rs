@@ -126,21 +126,180 @@ struct ProgramHeader {
 }
 
 impl From<ProgramHeader64> for ProgramHeader {
-    fn from(value: ProgramHeader64) -> Self {
+    fn from(pheader: ProgramHeader64) -> Self {
         Self {
-            r#type: value.r#type,
-            flags: value.flags,
-            offset: value.offset,
+            r#type: pheader.r#type,
+            flags: pheader.flags,
+            offset: pheader.offset,
         }
     }
 }
 
 impl From<ProgramHeader32> for ProgramHeader {
-    fn from(value: ProgramHeader32) -> Self {
+    fn from(pheader: ProgramHeader32) -> Self {
         Self {
-            r#type: value.r#type,
-            flags: value.flags,
-            offset: value.offset.into(),
+            r#type: pheader.r#type,
+            flags: pheader.flags,
+            offset: pheader.offset.into(),
+        }
+    }
+}
+
+#[repr(u32)]
+#[derive(PartialEq, Debug)]
+enum SectionType {
+    Null = SHT_NULL,
+    ProgBits = SHT_PROGBITS,
+    SymTab = SHT_SYMTAB,
+    StrTab = SHT_STRTAB,
+    Rela = SHT_RELA,
+    Hash = SHT_HASH,
+    Dynamic = SHT_DYNAMIC,
+    Note = SHT_NOTE,
+    NoBits = SHT_NOBITS,
+    Rel = SHT_REL,
+    ShLib = SHT_SHLIB,
+    DynSym = SHT_DYNSYM,
+    InitArray = SHT_INIT_ARRAY,
+    FiniArray = SHT_FINI_ARRAY,
+    PreinitArray = SHT_PREINIT_ARRAY,
+    Group = SHT_GROUP,
+    SymTabShNdx = SHT_SYMTAB_SHNDX,
+    GnuAttributes = SHT_GNU_ATTRIBUTES,
+    GnuHash = SHT_GNU_HASH,
+    GnuLibList = SHT_GNU_LIBLIST,
+    Checksum = SHT_CHECKSUM,
+    GnuVerDef = SHT_GNU_VERDEF,
+    GnuVerNeed = SHT_GNU_VERNEED,
+    GnuVerSym = SHT_GNU_VERSYM,
+}
+
+impl TryFrom<u32> for SectionType {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            SHT_NULL => Self::Null,
+            SHT_PROGBITS => Self::ProgBits,
+            SHT_SYMTAB => Self::SymTab,
+            SHT_STRTAB => Self::StrTab,
+            SHT_RELA => Self::Rela,
+            SHT_HASH => Self::Hash,
+            SHT_DYNAMIC => Self::Dynamic,
+            SHT_NOTE => Self::Note,
+            SHT_NOBITS => Self::NoBits,
+            SHT_REL => Self::Rel,
+            SHT_SHLIB => Self::ShLib,
+            SHT_DYNSYM => Self::DynSym,
+            SHT_INIT_ARRAY => Self::InitArray,
+            SHT_FINI_ARRAY => Self::FiniArray,
+            SHT_PREINIT_ARRAY => Self::PreinitArray,
+            SHT_GROUP => Self::Group,
+            SHT_SYMTAB_SHNDX => Self::SymTabShNdx,
+            SHT_GNU_ATTRIBUTES => Self::GnuAttributes,
+            SHT_GNU_HASH => Self::GnuHash,
+            SHT_GNU_LIBLIST => Self::GnuLibList,
+            SHT_CHECKSUM => Self::Checksum,
+            SHT_GNU_VERDEF => Self::GnuVerDef,
+            SHT_GNU_VERNEED => Self::GnuVerNeed,
+            SHT_GNU_VERSYM => Self::GnuVerSym,
+            _ => unknown!(),
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct SectionHeader32 {
+    name: u32,
+    r#type: SectionType,
+    flags: u32,
+    addr: u32,
+    offset: u32,
+    size: u32,
+    link: u32,
+    info: u32,
+    addr_align: u32,
+    ent_size: u32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct SectionHeader64 {
+    name: u32,
+    r#type: SectionType,
+    flags: u64,
+    addr: u64,
+    offset: u64,
+    size: u64,
+    link: u32,
+    info: u32,
+    addr_align: u64,
+    ent_size: u64,
+}
+
+macro_rules! impl_pull_sheader {
+    ($name:ident) => {
+        impl Pull for $name {
+            fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+                let name = bytes.pull()?;
+                let r#type = bytes.pull::<u32>()?.try_into()?;
+                let flags = bytes.pull()?;
+                let addr = bytes.pull()?;
+                let offset = bytes.pull()?;
+                let size = bytes.pull()?;
+                let link = bytes.pull()?;
+                let info = bytes.pull()?;
+                let addr_align = bytes.pull()?;
+                let ent_size = bytes.pull()?;
+                Ok(Self {
+                    name,
+                    r#type,
+                    flags,
+                    addr,
+                    offset,
+                    size,
+                    link,
+                    info,
+                    addr_align,
+                    ent_size,
+                })
+            }
+        }
+    };
+}
+impl_pull_sheader!(SectionHeader32);
+impl_pull_sheader!(SectionHeader64);
+
+#[derive(Debug)]
+struct SectionHeader {
+    name: u32,
+    r#type: SectionType,
+    flags: u64,
+    offset: u64,
+    size: u64,
+}
+
+impl From<SectionHeader32> for SectionHeader {
+    fn from(sheader: SectionHeader32) -> Self {
+        Self {
+            name: sheader.name,
+            r#type: sheader.r#type,
+            flags: sheader.flags.into(),
+            offset: sheader.offset.into(),
+            size: sheader.size.into(),
+        }
+    }
+}
+
+impl From<SectionHeader64> for SectionHeader {
+    fn from(sheader: SectionHeader64) -> Self {
+        Self {
+            name: sheader.name,
+            r#type: sheader.r#type,
+            flags: sheader.flags,
+            offset: sheader.offset,
+            size: sheader.size,
         }
     }
 }
@@ -179,10 +338,13 @@ impl Parser {
         Ok(())
     }
 
-    pub fn parse(&mut self, mut bytes: impl Bytes) -> Res<Table> {
+    pub fn parse(&mut self, mut bytes: impl Bytes, all: bool) -> Res<Table> {
         let mut table = Default::default();
         self.header(&mut bytes, &mut table)?;
-        self.pheaders(&mut bytes, &mut table)?;
+        if all {
+            self.pheaders(&mut bytes, &mut table)?;
+            self.sheaders(&mut bytes, &mut table)?;
+        }
         Ok(table)
     }
 
@@ -373,7 +535,7 @@ impl Parser {
                 WordSize::Eight => bytes.pull::<ProgramHeader64>()?.into(),
             };
             table.add_entry(
-                "Segment Type",
+                "Type",
                 match pheader.r#type {
                     SegmentType::Null => "NULL",
                     SegmentType::Load => "LOAD",
@@ -388,16 +550,21 @@ impl Parser {
                     SegmentType::GnuRelRo => "GNU_RELRO",
                 },
             );
-            let read = (pheader.flags & PF_R > 0, "Read");
-            let write = (pheader.flags & PF_W > 0, "Write");
-            let exec = (pheader.flags & PF_X > 0, "Execute");
-            let flags: String = [read, write, exec]
-                .iter()
-                .filter_map(|&(enabled, flag)| enabled.then_some(flag))
-                .enumerate()
-                .flat_map(|(i, flag)| [if i == 0 { "" } else { ", " }, flag])
-                .collect();
-            table.add_entry("Flags", flags);
+            let flags: String = [
+                (pheader.flags & PF_R > 0, "Read"),
+                (pheader.flags & PF_W > 0, "Write"),
+                (pheader.flags & PF_X > 0, "Execute"),
+            ]
+            .iter()
+            .filter_map(|&(enabled, flag)| enabled.then_some(flag))
+            .enumerate()
+            .flat_map(|(i, flag)| [if i == 0 { "" } else { ", " }, flag])
+            .collect();
+            if flags.is_empty() {
+                table.add_entry("Flags", "None");
+            } else {
+                table.add_entry("Flags", flags);
+            }
             match pheader.r#type {
                 SegmentType::Interp => {
                     let curr_pos = bytes.stream_position()?;
@@ -409,6 +576,106 @@ impl Parser {
                     table.add_entry("Interpreter", interpreter);
                     bytes.jump(curr_pos)?;
                 }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn sheaders(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
+        let name_strtab_header_addr =
+            self.sh_idx_str_table as u64 * self.sh_size as u64 + self.sh_offset;
+        bytes.jump(name_strtab_header_addr)?;
+        let name_strtab_header: SectionHeader =
+            match self.word_size.expect("word size was asssigned") {
+                WordSize::Four => bytes.pull::<SectionHeader32>()?.into(),
+                WordSize::Eight => bytes.pull::<SectionHeader64>()?.into(),
+            };
+        if name_strtab_header.r#type != SectionType::StrTab {
+            unknown!();
+        }
+        bytes.jump(name_strtab_header.offset)?; // jump to sheader name strtable
+        let name_strtab = {
+            let strtab_size = name_strtab_header
+                .size
+                .try_into()
+                .expect("size is within usize::MAX");
+            let mut strtab = vec![0; strtab_size];
+            bytes.read_exact(&mut strtab)?;
+            strtab
+        };
+
+        bytes.jump(self.sh_offset)?;
+        for i in 0..self.sh_count {
+            table.new_section(Some(format!("Section {}/{}", i + 1, self.sh_count)));
+            let sheader: SectionHeader = match self.word_size.expect("word size was asssigned") {
+                WordSize::Four => bytes.pull::<SectionHeader32>()?.into(),
+                WordSize::Eight => bytes.pull::<SectionHeader64>()?.into(),
+            };
+
+            let Ok(name) = std::ffi::CStr::from_bytes_until_nul(
+                &name_strtab[sheader.name.try_into().expect("u32 -> usize")..],
+            ) else {
+                unknown!()
+            };
+            table.add_entry("Name", name.to_string_lossy().into_owned());
+
+            table.add_entry(
+                "Type",
+                match sheader.r#type {
+                    SectionType::Null => "NULL",
+                    SectionType::ProgBits => "PROGBITS",
+                    SectionType::SymTab => "SYMTAB",
+                    SectionType::StrTab => "STRTAB",
+                    SectionType::Rela => "RELA",
+                    SectionType::Hash => "HASH",
+                    SectionType::Dynamic => "DYNAMIC",
+                    SectionType::Note => "NOTE",
+                    SectionType::NoBits => "NOBITS",
+                    SectionType::Rel => "REL",
+                    SectionType::ShLib => "SHLIB",
+                    SectionType::DynSym => "DYNSYM",
+                    SectionType::InitArray => "INITARRAY",
+                    SectionType::FiniArray => "FINIARRAY",
+                    SectionType::PreinitArray => "PREINITARRAY",
+                    SectionType::Group => "GROUP",
+                    SectionType::SymTabShNdx => "SYMTABSHNDX",
+                    SectionType::GnuAttributes => "GNU_ATTRIBUTES",
+                    SectionType::GnuHash => "GNU_HASH",
+                    SectionType::GnuLibList => "GNU_LIBLIST",
+                    SectionType::Checksum => "CHECKSUM",
+                    SectionType::GnuVerDef => "GNU_VERDEF",
+                    SectionType::GnuVerNeed => "GNU_VERNEED",
+                    SectionType::GnuVerSym => "GNU_VERSYM",
+                },
+            );
+            let flags: String = [
+                (sheader.flags & SHF_WRITE > 0, "Write"),
+                (sheader.flags & SHF_ALLOC > 0, "Alloc"),
+                (sheader.flags & SHF_EXECINSTR > 0, "Exec"),
+                (sheader.flags & SHF_MERGE > 0, "Merge"),
+                (sheader.flags & SHF_STRINGS > 0, "Strings"),
+                (sheader.flags & SHF_INFO_LINK > 0, "Info Link"),
+                (sheader.flags & SHF_LINK_ORDER > 0, "Link Order"),
+                (sheader.flags & SHF_OS_NONCONFORMING > 0, "OS Nonconforming"),
+                (sheader.flags & SHF_GROUP > 0, "Group"),
+                (sheader.flags & SHF_TLS > 0, "TLS"),
+                (sheader.flags & SHF_ORDERED > 0, "Ordered"),
+                (sheader.flags & SHF_EXCLUDE > 0, "Exclude"),
+            ]
+            .iter()
+            .filter_map(|&(enabled, flag)| enabled.then_some(flag))
+            .enumerate()
+            .flat_map(|(i, flag)| [if i == 0 { "" } else { ", " }, flag])
+            .collect();
+            if flags.is_empty() {
+                table.add_entry("Flags", "None");
+            } else {
+                table.add_entry("Flags", flags);
+            }
+
+            match sheader.r#type {
                 _ => {}
             }
         }

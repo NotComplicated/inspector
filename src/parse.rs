@@ -50,7 +50,7 @@ impl<const N: usize> Pull for [u8; N] {
     }
 }
 
-macro_rules! impl_pull {
+macro_rules! impl_pull_int {
     ($int:ty) => {
         impl Pull for $int {
             fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
@@ -59,11 +59,10 @@ macro_rules! impl_pull {
         }
     };
 }
-
-impl_pull!(u8);
-impl_pull!(u16);
-impl_pull!(u32);
-impl_pull!(u64);
+impl_pull_int!(u8);
+impl_pull_int!(u16);
+impl_pull_int!(u32);
+impl_pull_int!(u64);
 
 impl Pull for std::ffi::CString {
     fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
@@ -149,12 +148,12 @@ impl Table {
     }
 }
 
-pub fn start<B: Bytes>(mut bytes: B) -> Res<Table> {
+pub fn start<B: Bytes>(mut bytes: B, all: bool) -> Res<Table> {
     macro_rules! try_parse {
         ($mod:ident) => {
             if $mod::matching_magic(&mut bytes)? {
                 bytes.rewind()?;
-                return $mod::Parser::default().parse(bytes);
+                return $mod::Parser::default().parse(bytes, all);
             }
             bytes.rewind()?;
         };
