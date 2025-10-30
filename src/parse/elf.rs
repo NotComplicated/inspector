@@ -23,6 +23,7 @@ enum SegmentType {
     GnuEhFrame = PT_GNU_EH_FRAME,
     GnuStack = PT_GNU_STACK,
     GnuRelRo = PT_GNU_RELRO,
+    Unknown,
 }
 
 impl TryFrom<u32> for SegmentType {
@@ -41,7 +42,7 @@ impl TryFrom<u32> for SegmentType {
             PT_GNU_EH_FRAME => Self::GnuEhFrame,
             PT_GNU_STACK => Self::GnuStack,
             PT_GNU_RELRO => Self::GnuRelRo,
-            _ => unknown!(),
+            _ => Self::Unknown,
         })
     }
 }
@@ -172,6 +173,7 @@ enum SectionType {
     GnuVerDef = SHT_GNU_VERDEF,
     GnuVerNeed = SHT_GNU_VERNEED,
     GnuVerSym = SHT_GNU_VERSYM,
+    Unknown,
 }
 
 impl TryFrom<u32> for SectionType {
@@ -203,7 +205,7 @@ impl TryFrom<u32> for SectionType {
             SHT_GNU_VERDEF => Self::GnuVerDef,
             SHT_GNU_VERNEED => Self::GnuVerNeed,
             SHT_GNU_VERSYM => Self::GnuVerSym,
-            _ => unknown!(),
+            _ => Self::Unknown,
         })
     }
 }
@@ -529,11 +531,12 @@ impl Parser {
     fn pheaders(&mut self, bytes: &mut impl Bytes, table: &mut Table) -> Res<()> {
         bytes.jump(self.ph_offset)?;
         for i in 0..self.ph_count {
-            table.new_section(Some(format!("Program Segment {}/{}", i + 1, self.ph_count)));
+            table.new_named_section(format!("Program Segment {}/{}", i + 1, self.ph_count));
             let pheader: ProgramHeader = match self.word_size.expect("word size was asssigned") {
                 WordSize::Four => bytes.pull::<ProgramHeader32>()?.into(),
                 WordSize::Eight => bytes.pull::<ProgramHeader64>()?.into(),
             };
+
             table.add_entry(
                 "Type",
                 match pheader.r#type {
@@ -548,8 +551,10 @@ impl Parser {
                     SegmentType::GnuEhFrame => "GNU_EH_FRAME",
                     SegmentType::GnuStack => "GNU_STACK",
                     SegmentType::GnuRelRo => "GNU_RELRO",
+                    SegmentType::Unknown => "Unknown",
                 },
             );
+
             let flags: String = [
                 (pheader.flags & PF_R > 0, "Read"),
                 (pheader.flags & PF_W > 0, "Write"),
@@ -565,6 +570,7 @@ impl Parser {
             } else {
                 table.add_entry("Flags", flags);
             }
+
             match pheader.r#type {
                 SegmentType::Interp => {
                     let curr_pos = bytes.stream_position()?;
@@ -597,22 +603,24 @@ impl Parser {
         }
         bytes.jump(name_strtab_header.offset)?; // jump to sheader name strtable
         let name_strtab = {
-            let strtab_size = name_strtab_header
+            let size = name_strtab_header
                 .size
                 .try_into()
                 .expect("size is within usize::MAX");
-            let mut strtab = vec![0; strtab_size];
+            let mut strtab = vec![0; size];
             bytes.read_exact(&mut strtab)?;
             strtab
         };
 
         bytes.jump(self.sh_offset)?;
+        let mut total_size = 0;
         for i in 0..self.sh_count {
-            table.new_section(Some(format!("Section {}/{}", i + 1, self.sh_count)));
+            table.new_named_section(format!("Section {}/{}", i + 1, self.sh_count));
             let sheader: SectionHeader = match self.word_size.expect("word size was asssigned") {
                 WordSize::Four => bytes.pull::<SectionHeader32>()?.into(),
                 WordSize::Eight => bytes.pull::<SectionHeader64>()?.into(),
             };
+            total_size += sheader.size;
 
             let Ok(name) = std::ffi::CStr::from_bytes_until_nul(
                 &name_strtab[sheader.name.try_into().expect("u32 -> usize")..],
@@ -648,6 +656,7 @@ impl Parser {
                     SectionType::GnuVerDef => "GNU_VERDEF",
                     SectionType::GnuVerNeed => "GNU_VERNEED",
                     SectionType::GnuVerSym => "GNU_VERSYM",
+                    SectionType::Unknown => "Unknown",
                 },
             );
             let flags: String = [
@@ -675,10 +684,15 @@ impl Parser {
                 table.add_entry("Flags", flags);
             }
 
-            match sheader.r#type {
+            table.add_entry("Size", format!("{} bytes", sheader.size));
+
+            match name.to_bytes() {
                 _ => {}
             }
         }
+
+        table.new_unnamed_section();
+        table.add_entry("Total Size of Sections", format!("{} bytes", total_size));
 
         Ok(())
     }

@@ -140,11 +140,15 @@ impl Table {
         self.entries.push((key, value.into()));
     }
 
-    pub fn new_section(&mut self, name: Option<impl Into<Str>>) {
+    pub fn new_named_section(&mut self, name: impl Into<Str>) {
         self.sections.push(Section {
-            name: name.map(Into::into),
+            name: Some(name.into()),
             ..Default::default()
         });
+    }
+
+    pub fn new_unnamed_section(&mut self) {
+        self.sections.push(Default::default());
     }
 }
 
