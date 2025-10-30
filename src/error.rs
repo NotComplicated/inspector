@@ -27,6 +27,7 @@ impl std::fmt::Display for Error {
                 print_bt(f, bt)
             }
             Self::Seek(count) => write!(f, "Seeked too many bytes ({count})"),
+            #[allow(unused)]
             Self::UnknownFormat(bt, line) => {
                 write!(f, "Unknown format")?;
                 #[cfg(debug_assertions)]
