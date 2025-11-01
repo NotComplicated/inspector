@@ -6,7 +6,13 @@ use crate::unknown;
 const MAGIC: [u8; 4] = [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3];
 
 pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
-    Ok(bytes.pull_arr()? == MAGIC)
+    Ok(bytes.pull::<[_; _]>()? == MAGIC)
+}
+
+#[derive(Copy, Clone, Debug)]
+enum WordSize {
+    Four,
+    Eight,
 }
 
 #[repr(u32)]
@@ -26,11 +32,11 @@ enum SegmentType {
     Unknown,
 }
 
-impl TryFrom<u32> for SegmentType {
-    type Error = Error;
+impl Pull for SegmentType {
+    type Format = ();
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(match value {
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
+        Ok(match bytes.pull()? {
             PT_NULL => Self::Null,
             PT_LOAD => Self::Load,
             PT_DYNAMIC => Self::Dynamic,
@@ -47,78 +53,6 @@ impl TryFrom<u32> for SegmentType {
     }
 }
 
-#[repr(C)]
-#[derive(Debug)]
-struct ProgramHeader32 {
-    r#type: SegmentType,
-    offset: u32,
-    vaddr: u32,
-    paddr: u32,
-    filesz: u32,
-    memsz: u32,
-    flags: u32,
-    align: u32,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct ProgramHeader64 {
-    r#type: SegmentType,
-    flags: u32,
-    offset: u64,
-    vaddr: u64,
-    paddr: u64,
-    filesz: u64,
-    memsz: u64,
-    align: u64,
-}
-
-impl Pull for ProgramHeader32 {
-    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-        let r#type = bytes.pull::<u32>()?.try_into()?;
-        let offset = bytes.pull()?;
-        let vaddr = bytes.pull()?;
-        let paddr = bytes.pull()?;
-        let filesz = bytes.pull()?;
-        let memsz = bytes.pull()?;
-        let flags = bytes.pull()?;
-        let align = bytes.pull()?;
-        Ok(Self {
-            r#type,
-            offset,
-            vaddr,
-            paddr,
-            filesz,
-            memsz,
-            flags,
-            align,
-        })
-    }
-}
-
-impl Pull for ProgramHeader64 {
-    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-        let r#type = bytes.pull::<u32>()?.try_into()?;
-        let flags = bytes.pull()?;
-        let offset = bytes.pull()?;
-        let vaddr = bytes.pull()?;
-        let paddr = bytes.pull()?;
-        let filesz = bytes.pull()?;
-        let memsz = bytes.pull()?;
-        let align = bytes.pull()?;
-        Ok(Self {
-            r#type,
-            flags,
-            offset,
-            vaddr,
-            paddr,
-            filesz,
-            memsz,
-            align,
-        })
-    }
-}
-
 #[derive(Debug)]
 struct ProgramHeader {
     r#type: SegmentType,
@@ -126,23 +60,31 @@ struct ProgramHeader {
     offset: u64,
 }
 
-impl From<ProgramHeader64> for ProgramHeader {
-    fn from(pheader: ProgramHeader64) -> Self {
-        Self {
-            r#type: pheader.r#type,
-            flags: pheader.flags,
-            offset: pheader.offset,
-        }
-    }
-}
+impl Pull for ProgramHeader {
+    type Format = WordSize;
 
-impl From<ProgramHeader32> for ProgramHeader {
-    fn from(pheader: ProgramHeader32) -> Self {
-        Self {
-            r#type: pheader.r#type,
-            flags: pheader.flags,
-            offset: pheader.offset.into(),
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, word_size: Self::Format) -> Res<Self> {
+        let r#type = bytes.pull()?;
+        let flags;
+        let offset;
+        match word_size {
+            WordSize::Four => {
+                offset = bytes.pull::<u32>()?.into();
+                bytes.forward_sizeof::<[u32; 4]>()?;
+                flags = bytes.pull()?;
+                bytes.forward_sizeof::<u32>()?;
+            }
+            WordSize::Eight => {
+                flags = bytes.pull()?;
+                offset = bytes.pull()?;
+                bytes.forward_sizeof::<[u64; 5]>()?;
+            }
         }
+        Ok(Self {
+            r#type,
+            flags,
+            offset,
+        })
     }
 }
 
@@ -176,11 +118,11 @@ enum SectionType {
     Unknown,
 }
 
-impl TryFrom<u32> for SectionType {
-    type Error = Error;
+impl Pull for SectionType {
+    type Format = ();
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(match value {
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
+        Ok(match bytes.pull()? {
             SHT_NULL => Self::Null,
             SHT_PROGBITS => Self::ProgBits,
             SHT_SYMTAB => Self::SymTab,
@@ -210,69 +152,6 @@ impl TryFrom<u32> for SectionType {
     }
 }
 
-#[repr(C)]
-#[derive(Debug)]
-struct SectionHeader32 {
-    name: u32,
-    r#type: SectionType,
-    flags: u32,
-    addr: u32,
-    offset: u32,
-    size: u32,
-    link: u32,
-    info: u32,
-    addr_align: u32,
-    ent_size: u32,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct SectionHeader64 {
-    name: u32,
-    r#type: SectionType,
-    flags: u64,
-    addr: u64,
-    offset: u64,
-    size: u64,
-    link: u32,
-    info: u32,
-    addr_align: u64,
-    ent_size: u64,
-}
-
-macro_rules! impl_pull_sheader {
-    ($name:ident) => {
-        impl Pull for $name {
-            fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-                let name = bytes.pull()?;
-                let r#type = bytes.pull::<u32>()?.try_into()?;
-                let flags = bytes.pull()?;
-                let addr = bytes.pull()?;
-                let offset = bytes.pull()?;
-                let size = bytes.pull()?;
-                let link = bytes.pull()?;
-                let info = bytes.pull()?;
-                let addr_align = bytes.pull()?;
-                let ent_size = bytes.pull()?;
-                Ok(Self {
-                    name,
-                    r#type,
-                    flags,
-                    addr,
-                    offset,
-                    size,
-                    link,
-                    info,
-                    addr_align,
-                    ent_size,
-                })
-            }
-        }
-    };
-}
-impl_pull_sheader!(SectionHeader32);
-impl_pull_sheader!(SectionHeader64);
-
 #[derive(Debug)]
 struct SectionHeader {
     name: u32,
@@ -282,34 +161,40 @@ struct SectionHeader {
     size: u64,
 }
 
-impl From<SectionHeader32> for SectionHeader {
-    fn from(sheader: SectionHeader32) -> Self {
-        Self {
-            name: sheader.name,
-            r#type: sheader.r#type,
-            flags: sheader.flags.into(),
-            offset: sheader.offset.into(),
-            size: sheader.size.into(),
-        }
-    }
-}
+impl Pull for SectionHeader {
+    type Format = WordSize;
 
-impl From<SectionHeader64> for SectionHeader {
-    fn from(sheader: SectionHeader64) -> Self {
-        Self {
-            name: sheader.name,
-            r#type: sheader.r#type,
-            flags: sheader.flags,
-            offset: sheader.offset,
-            size: sheader.size,
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, word_size: Self::Format) -> Res<Self> {
+        let name = bytes.pull()?;
+        let r#type = bytes.pull()?;
+        let flags;
+        let offset;
+        let size;
+        match word_size {
+            WordSize::Four => {
+                flags = bytes.pull::<u32>()?.into();
+                bytes.forward_sizeof::<u32>()?;
+                offset = bytes.pull::<u32>()?.into();
+                size = bytes.pull::<u32>()?.into();
+                bytes.forward_sizeof::<[u32; 4]>()?;
+            }
+            WordSize::Eight => {
+                flags = bytes.pull()?;
+                bytes.forward_sizeof::<u64>()?;
+                offset = bytes.pull()?;
+                size = bytes.pull()?;
+                bytes.forward_sizeof::<[u32; 2]>()?;
+                bytes.forward_sizeof::<[u64; 2]>()?;
+            }
         }
+        Ok(Self {
+            name,
+            r#type,
+            flags,
+            offset,
+            size,
+        })
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum WordSize {
-    Four,
-    Eight,
 }
 
 #[derive(Default, Debug)]
@@ -532,10 +417,8 @@ impl Parser {
         bytes.jump(self.ph_offset)?;
         for i in 0..self.ph_count {
             table.new_named_section(format!("Program Segment {}/{}", i + 1, self.ph_count));
-            let pheader: ProgramHeader = match self.word_size.expect("word size was asssigned") {
-                WordSize::Four => bytes.pull::<ProgramHeader32>()?.into(),
-                WordSize::Eight => bytes.pull::<ProgramHeader64>()?.into(),
-            };
+            let pheader: ProgramHeader =
+                bytes.pull_via(self.word_size.expect("word size assigned"))?;
 
             table.add_entry(
                 "Type",
@@ -594,10 +477,7 @@ impl Parser {
             self.sh_idx_str_table as u64 * self.sh_size as u64 + self.sh_offset;
         bytes.jump(name_strtab_header_addr)?;
         let name_strtab_header: SectionHeader =
-            match self.word_size.expect("word size was asssigned") {
-                WordSize::Four => bytes.pull::<SectionHeader32>()?.into(),
-                WordSize::Eight => bytes.pull::<SectionHeader64>()?.into(),
-            };
+            bytes.pull_via(self.word_size.expect("word size assigned"))?;
         if name_strtab_header.r#type != SectionType::StrTab {
             unknown!();
         }
@@ -616,10 +496,8 @@ impl Parser {
         let mut total_size = 0;
         for i in 0..self.sh_count {
             table.new_named_section(format!("Section {}/{}", i + 1, self.sh_count));
-            let sheader: SectionHeader = match self.word_size.expect("word size was asssigned") {
-                WordSize::Four => bytes.pull::<SectionHeader32>()?.into(),
-                WordSize::Eight => bytes.pull::<SectionHeader64>()?.into(),
-            };
+            let sheader: SectionHeader =
+                bytes.pull_via(self.word_size.expect("word size assigned"))?;
             total_size += sheader.size;
 
             let Ok(name) = std::ffi::CStr::from_bytes_until_nul(

@@ -3,15 +3,15 @@ mod elf;
 use crate::error::{Error, Res};
 
 pub trait Bytes: std::io::BufRead + std::io::Seek {
-    fn pull<P: Pull>(&mut self) -> Res<P> {
+    fn pull<P: Pull>(&mut self) -> Res<P>
+    where
+        P::Format: Default,
+    {
         P::pull(self)
     }
 
-    fn pull_arr<T, const N: usize>(&mut self) -> Res<[T; N]>
-    where
-        [T; N]: Pull,
-    {
-        self.pull()
+    fn pull_via<P: Pull>(&mut self, fmt: P::Format) -> Res<P> {
+        P::pull_fmt(self, fmt)
     }
 
     fn forward(&mut self, count: usize) -> Res<()> {
@@ -39,22 +39,45 @@ pub trait Bytes: std::io::BufRead + std::io::Seek {
 impl<T: std::io::BufRead + std::io::Seek> Bytes for T {}
 
 pub trait Pull: Sized {
-    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self>;
+    type Format;
+
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, fmt: Self::Format) -> Res<Self>;
+
+    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self>
+    where
+        Self::Format: Default,
+    {
+        Self::pull_fmt(bytes, Default::default())
+    }
 }
 
 impl<const N: usize> Pull for [u8; N] {
-    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+    type Format = ();
+
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
         let mut pulled = [0; _];
         bytes.read_exact(&mut pulled)?;
         Ok(pulled)
     }
 }
 
+#[derive(Default)]
+pub enum Endianness {
+    #[default]
+    Little,
+    Big,
+}
+
 macro_rules! impl_pull_int {
     ($int:ty) => {
         impl Pull for $int {
-            fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
-                Pull::pull(bytes).map(<$int>::from_le_bytes)
+            type Format = Endianness;
+
+            fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, endianness: Self::Format) -> Res<Self> {
+                match endianness {
+                    Endianness::Little => Pull::pull(bytes).map(<$int>::from_le_bytes),
+                    Endianness::Big => Pull::pull(bytes).map(<$int>::from_be_bytes),
+                }
             }
         }
     };
@@ -65,7 +88,9 @@ impl_pull_int!(u32);
 impl_pull_int!(u64);
 
 impl Pull for std::ffi::CString {
-    fn pull<B: Bytes + ?Sized>(bytes: &mut B) -> Res<Self> {
+    type Format = ();
+
+    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
         let mut contents = vec![];
         while let byte = bytes.pull::<u8>()?
             && byte != 0
