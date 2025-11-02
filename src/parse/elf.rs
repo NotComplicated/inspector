@@ -1,7 +1,9 @@
-use crate::elf_header::*;
-use crate::error::{Error, Res};
-use crate::parse::{Bytes, Pull, Str, Table};
-use crate::unknown;
+use crate::{
+    elf_header::*,
+    error::{Error, Res},
+    parse::{Bytes, Pull, Str, Table},
+    unknown,
+};
 
 const MAGIC: [u8; 4] = [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3];
 

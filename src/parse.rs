@@ -1,4 +1,5 @@
 mod elf;
+mod png;
 
 use crate::error::{Error, Res};
 
@@ -189,6 +190,7 @@ pub fn start<B: Bytes>(mut bytes: B, all: bool) -> Res<Table> {
     }
 
     try_parse!(elf);
+    try_parse!(png);
     // add parse modules here
 
     unknown!();
