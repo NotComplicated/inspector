@@ -11,6 +11,7 @@ pub fn matching_magic(bytes: &mut impl Bytes) -> Res<bool> {
 }
 
 #[repr(u8)]
+#[derive(Debug)]
 enum BitDepth {
     One = 1,
     Two = 2,
@@ -35,6 +36,7 @@ impl Pull for BitDepth {
 }
 
 #[repr(u8)]
+#[derive(Debug)]
 enum ColorType {
     Grayscale = 0,
     Rgb = 2,
@@ -58,38 +60,20 @@ impl Pull for ColorType {
     }
 }
 
-#[repr(u8)]
-enum Interlace {
-    None = 0,
-    Adam7 = 1,
-}
-
-impl Pull for Interlace {
-    type Format = ();
-
-    fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
-        Ok(match bytes.pull()? {
-            0u8 => Self::None,
-            1 => Self::Adam7,
-            _ => unknown!(),
-        })
-    }
-}
-
 type Color = [u8; 3];
 
+#[derive(Debug)]
 enum Chunk {
     Ihdr {
         width: u32,
         height: u32,
         bit_depth: BitDepth,
         color_type: ColorType,
-        interlace: Interlace,
     },
     Plte(Vec<Color>),
-    Idat(u32),
-    Iend,
+    Idat(usize),
     Gama(f32),
+    Iend,
     Unknown,
 }
 
@@ -97,7 +81,10 @@ impl Pull for Chunk {
     type Format = ();
 
     fn pull_fmt<B: Bytes + ?Sized>(bytes: &mut B, _: Self::Format) -> Res<Self> {
-        let len: u32 = bytes.pull_via(Endianness::Big)?;
+        let len: usize = bytes
+            .pull_via::<u32>(Endianness::Big)?
+            .try_into()
+            .expect("u32 -> usize");
         let r#type = {
             let mut r#type = bytes.pull::<[u8; 4]>()?;
             r#type.make_ascii_uppercase();
@@ -118,27 +105,30 @@ impl Pull for Chunk {
                 if bytes.pull::<u8>()? != 0 {
                     unknown!();
                 }
-                let interlace = bytes.pull()?;
+                bytes.forward(1)?; // interlace
                 Self::Ihdr {
                     width,
                     height,
                     bit_depth,
                     color_type,
-                    interlace,
                 }
             }
             b"PLTE" => Self::Plte((0..len / 3).map(|_| bytes.pull()).collect::<Res<_>>()?),
             b"IDAT" => {
-                bytes.forward(len.try_into().expect("u32 -> usize"))?;
+                bytes.forward(len)?;
                 Self::Idat(len)
             }
-            b"IEND" => Self::Iend,
             b"GAMA" => {
-                let gamma = bytes.pull_via::<u32>(Endianness::Big)?;
+                let gamma: u32 = bytes.pull_via(Endianness::Big)?;
                 Self::Gama(gamma as f32 / 100_000.0)
             }
-            _ => Self::Unknown,
+            b"IEND" => Self::Iend,
+            _ => {
+                bytes.forward(len)?;
+                Self::Unknown
+            }
         };
+
         bytes.forward(4)?; // crc
         Ok(chunk)
     }
@@ -149,9 +139,67 @@ pub struct Parser;
 
 impl Parser {
     pub fn parse(self, mut bytes: impl Bytes, all: bool) -> Res<Table> {
-        let mut table = Default::default();
+        let mut table = Table::default();
         bytes.forward(std::mem::size_of_val(&MAGIC))?;
-        println!("foo");
+        let mut total_len = 0;
+        let mut img_gamma = None;
+        loop {
+            match bytes.pull()? {
+                Chunk::Ihdr {
+                    width,
+                    height,
+                    bit_depth,
+                    color_type,
+                } => {
+                    table.add_entry("Width", format!("{width} px"));
+                    table.add_entry("Height", format!("{height} px"));
+                    table.add_entry(
+                        "Bit Depth",
+                        match bit_depth {
+                            BitDepth::One => "1",
+                            BitDepth::Two => "2",
+                            BitDepth::Four => "4",
+                            BitDepth::Eight => "8",
+                            BitDepth::Sixteen => "16",
+                        },
+                    );
+                    table.add_entry(
+                        "Color Type",
+                        match color_type {
+                            ColorType::Grayscale => "Grayscale",
+                            ColorType::Rgb => "RGB",
+                            ColorType::Palette => "Palette",
+                            ColorType::GrayscaleAlpha => "Grayscale Alpha",
+                            ColorType::RgbAlpha => "RGBA",
+                        },
+                    );
+                    if !all {
+                        break;
+                    }
+                }
+                Chunk::Plte(palette) => {
+                    table.new_named_section("Palette");
+                    for (i, [r, g, b]) in palette.iter().enumerate() {
+                        table.add_entry(
+                            format!("Color {}", i + 1),
+                            format!("0x{r:02X}{g:02X}{b:02X}"),
+                        );
+                    }
+                }
+                Chunk::Idat(len) => total_len += len,
+                Chunk::Gama(gamma) => img_gamma = Some(gamma),
+                Chunk::Iend => break,
+                Chunk::Unknown => {}
+            }
+        }
+        if all {
+            table.new_unnamed_section();
+            table.add_entry("Total IDAT Size", format!("{total_len} bytes"));
+            if let Some(gamma) = img_gamma {
+                table.add_entry("Gamma", format!("{gamma}"));
+            }
+        }
+
         Ok(table)
     }
 }
